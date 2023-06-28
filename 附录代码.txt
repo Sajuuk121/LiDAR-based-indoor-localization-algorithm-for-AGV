@@ -1,0 +1,601 @@
+%MCL
+%在二维空间,假设运动物体的一组(非线性)运动位置、速度、加速度数据,用粒子滤波方法进行处理
+clc; clear all; close all;
+%% 参数设置
+N = 200; %粒子总数
+Q = 5; %过程噪声(控制误差)  状态转移方程中使用
+R = 5; %测量噪声  由真实位置叠加测量噪声得到测量位置
+T = 15; %测量时间(总步数)
+theta = pi/T; %旋转角度
+distance = 80/T; %每次走的距离(步长)
+WorldSize = 100; %世界大小
+X = zeros(2, T); %存储系统状态(每列存储二维位置坐标(x,y),共T个位置)
+Z = zeros(2, T); %存储系统的观测状态(每列存储二维位置坐标(x,y),共T次测量)
+P = zeros(2, N); %建立粒子群(每列存储当前粒子的二维位置坐标,共N个粒子)
+PCenter = zeros(2, T); %所有粒子的中心位置
+w = zeros(N, 1); %每个粒子的权重
+err = zeros(2,T); %误差(第一行为粒子与真实路径误差  第二行为测量与真实路径误差)
+X(:, 1) = [60; 10]; %初始系统状态 即初始位置在坐标(60,10)
+Z(:, 1) = X(:,1) + wgn(2,1,10*log10(R)); %初始系统的观测状态(为真实位姿叠加高斯噪声)
+                                             %y = wgn(m,n,p) 产生一个m行n列的高斯白噪声的矩阵，p以dBW为单位指定输出噪声的强度
+%% 初始化粒子群
+for i = 1 : N
+    P(:, i) = [WorldSize*rand; WorldSize*rand];%随机产生第i个粒子的坐标(rand为产生[0,1]之间均匀分布)
+    dist = norm(P(:, i)-Z(:, 1)); %与测量位置相差的距离
+    %求权重 (权重与距离的关系 为 均值是0,方差是sqrt(R)的高斯分布曲线)  因为均值为0且距离大于0 因此权重随着距离增加沿高斯曲线右侧递减
+    w(i) = (1 / sqrt(R) / sqrt(2 * pi)) * exp(-(dist)^2 / 2 / R); 
+end
+PCenter(:, 1) = sum(P, 2) / N;%t=1时刻(初始时刻)所有粒子的几何中心位置
+% 初始状态(t=1)画图
+err(1,1) = norm(X(:, 1) - PCenter(:, 1));%粒子群几何中心与系统真实状态的误差
+err(2,1) = wgn(1, 1, 10*log10(R));
+figure(1);
+hold on
+set(0,'defaultfigurecolor','w')
+plot(X(1, 1), X(2, 1), 'r.', 'markersize',30) %真实的初始状态位置(红点表示)
+%grid on
+axis([0 100 0 100]);
+set(gca,'XTick',0:10:100) %改变x轴坐标间隔显示 这里间隔为10
+set(gca,'YTick',0:10:100) %改变y轴坐标间隔显示 这里间隔为10
+plot(P(1, :), P(2, :), 'k.', 'markersize',5); %各个粒子位置(N个黑点)
+plot(PCenter(1, 1), PCenter(2, 1), 'b.', 'markersize',25); %所有粒子的中心位置(蓝点表示)
+legend('真实位置', '粒子群', '粒子群的几何中心');
+title('初始状态');
+hold off
+%% 开始运动
+for k = 2 : T %从t=2到T
+    %模拟一个弧线运动的状态
+    X(:, k) = X(:, k-1) + distance * [(-cos(k * theta)); sin(k * theta)] + wgn(2, 1, 10*log10(Q)); %状态方程
+    Z(:, k) = X(:, k) + wgn(2, 1, 10*log10(R)); %观测方程(状态上叠加测量的高斯噪声) 
+    %粒子滤波
+    %预测
+    for i = 1 : N
+        P(:, i) = P(:, i) + distance * [-cos(k * theta); sin(k * theta)] + wgn(2, 1, 10*log10(Q));%粒子群带入状态方程
+        dist = norm(P(:, i)-Z(:, k)); %粒子群中各粒子 与 测量位置 的距离
+        w(i) = (1 / sqrt(R) / sqrt(2 * pi)) * exp(-(dist)^2 / 2 / R); %求权重(距离近权重大)
+    end
+    %归一化权重
+    wsum = sum(w);
+    for i = 1 : N
+        w(i) = w(i) / wsum;
+    end
+    %重采样（更新）
+    for i = 1 : N
+        wmax = 2 * max(w) * rand; %另一种重采样规则
+        index = randi(N, 1);%生成一个在[1(默认值),N]之间均匀分布的伪随机整数
+        while(wmax > w(index))
+            wmax = wmax - w(index);
+            index = index + 1;
+            if index > N
+                index = 1;
+            end 
+        end
+        Pnext(:, i) = P(:, index); %得到新粒子放入临时集Pnext
+    end
+    P=Pnext;%用临时集Pnext更新粒子集P
+    PCenter(:, k) = sum(P, 2) / N; %重采样后所有粒子的中心位置
+    %计算误差
+    err(1,k) = norm(X(:, k) - PCenter(:, k)); %粒子几何中心与系统真实状态的误差
+    err(2,k) = norm(X(:, k) - Z(:, k));
+    %画图
+    figure(2);
+    set(0,'defaultfigurecolor','w')
+    clf;%清空figure(2)中的图像 以便循环重新画
+    hold on
+    plot(X(1, k), X(2, k), 'r.', 'markersize',30); %系统状态位置
+    plot(P(1, :), P(2, :), 'k.', 'markersize',5); %各个粒子位置
+    plot(PCenter(1, k), PCenter(2, k), 'b.', 'markersize',25); %所有粒子的中心位置
+    axis([0 100 0 100]);
+    title('运动过程');
+    legend('真实状态', '粒子群', '粒子群的几何中心');
+    hold off
+    pause(0.1);%停0.1s开始下次迭代
+end
+%% 绘制轨迹
+figure(3);
+set(0,'defaultfigurecolor','w')
+plot(X(1,:), X(2,:), 'r.-', Z(1,:), Z(2,:), 'g.-', PCenter(1,:), PCenter(2,:), 'b.-');
+axis([0 100 0 100]);
+set(gca,'XTick',0:10:100) %改变x轴坐标间隔显示 这里间隔为10
+set(gca,'YTick',0:10:100) %改变y轴坐标间隔显示 这里间隔为10
+legend('真实轨迹', '测量轨迹', '粒子群几何中心轨迹');
+xlabel('横坐标 x'); ylabel('纵坐标 y');
+%% 绘制误差
+figure(4);
+set(0,'defaultfigurecolor','w')
+%set(gca,'FontSize',12);%设置图标字体大小
+plot(err(1,:),'b.-');%err1为各时刻 真实位置与粒子群中心的几何距离
+hold on
+plot(err(2,:),'r.-');%err2为各时刻 真实位置与测量位置的几何距离
+hold off
+xlabel('步数 t');
+legend('粒子群误差', '测量误差');
+title('真实位置与粒子群中心的集合距离');
+========================================================================
+%%smallrobot_base
+function sysCall_init()
+    -- do some initialization here
+    
+    -- params
+    WheelDiameter = 0.10
+    WheelDist = 0.27
+    
+    odom_pub_rate = 10
+    odom_pub_ts = 1.0/odom_pub_rate
+    odom_pub_pre_sim_time = 0
+    
+    odomX = 0
+    odomY = 0
+    odomTh = 0
+
+    -- Check the required RosInterface first
+    if simROS then   
+        sub_velocity = simROS.subscribe('/cmd_vel','geometry_msgs/Twist','velocity_callback')
+        pub_odom   = simROS.advertise('/odom','nav_msgs/Odometry')   
+    else
+        -- Display an error message if the plugin was not found:
+        sim.displayDialog('smallrobot error','ROS plugin was not found.&&nSimulation will not run properly',sim.dlgstyle_ok,false,nil,{0.8,0,0,0,0,0},{0.5,0,0,1,1,1})
+    end
+
+    -- Motor handles
+    lwmotor=sim.getObjectHandle("lwmotor")
+    rwmotor=sim.getObjectHandle("rwmotor")
+
+    lwmotor_joint_ang_pre = sim.getJointPosition(lwmotor)
+    rwmotor_joint_ang_pre = sim.getJointPosition(rwmotor)
+
+    -- odometry msg
+    odom_seq = 0
+    OdomMsg = {
+        header = {
+            seq = 0,
+            stamp = 0.0,
+            frame_id = '/odom'
+        },
+        child_frame_id = 'base_link',
+        pose = {
+            pose = {
+                position = {x = 0.0, y = 0.0, z = 0.0},
+                orientation = {x = 0.0, y = 0.0, z = 0.0, w=1.0}
+            },
+            covariance = {0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0}
+        },
+        twist = {
+            twist = {
+                linear = {x = 0.0, y = 0.0, z = 0.0},
+                angular = {x = 0.0, y = 0.0, z = 0.0}
+            },
+            covariance = {0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0}
+        }
+    }
+
+    -- odometry tf msg
+    OdomTFMsg= {
+        header={
+            seq=0,
+            stamp=0.0,
+            frame_id="/odom"
+        },
+        child_frame_id="base_link",
+        transform={
+            translation = {x=0.0,y=0.0,z=0.0},
+            rotation= {x=0.0,y=0.0, z=0.0,w=1.0}
+        }
+    }
+end
+
+function sysCall_actuation()
+    -- put your actuation code here
+end
+
+function sysCall_sensing()
+    -- put your sensing code here
+    
+    local current_sim_time = sim.getSimulationTime()
+
+    -- odom msgs and odom tf
+    if ((current_sim_time-odom_pub_pre_sim_time)>odom_pub_ts) then
+        odom_dt = current_sim_time-odom_pub_pre_sim_time
+
+        lwmotor_joint_ang_cur = sim.getJointPosition(lwmotor)
+        rwmotor_joint_ang_cur = sim.getJointPosition(rwmotor)
+        --print('left encoder:' .. lwmotor_joint_ang_cur .. ', right encoder: ' .. rwmotor_joint_ang_cur)
+
+        if (math.abs(lwmotor_joint_ang_cur-lwmotor_joint_ang_pre)<math.pi) then
+            lwmotor_joint_ang_change = lwmotor_joint_ang_cur-lwmotor_joint_ang_pre
+        elseif ((lwmotor_joint_ang_cur-lwmotor_joint_ang_pre)<0) then
+            lwmotor_joint_ang_change = lwmotor_joint_ang_cur-lwmotor_joint_ang_pre+math.pi*2
+        elseif ((lwmotor_joint_ang_cur-lwmotor_joint_ang_pre)>0) then
+            lwmotor_joint_ang_change = lwmotor_joint_ang_cur-lwmotor_joint_ang_pre-math.pi*2
+        end
+        if (math.abs(rwmotor_joint_ang_cur-rwmotor_joint_ang_pre)<math.pi) then
+            rwmotor_joint_ang_change = rwmotor_joint_ang_cur-rwmotor_joint_ang_pre
+        elseif ((rwmotor_joint_ang_cur-rwmotor_joint_ang_pre)<0) then
+            rwmotor_joint_ang_change = rwmotor_joint_ang_cur-rwmotor_joint_ang_pre+math.pi*2
+        elseif ((rwmotor_joint_ang_cur-rwmotor_joint_ang_pre)>0) then
+            rwmotor_joint_ang_change = rwmotor_joint_ang_cur-rwmotor_joint_ang_pre-math.pi*2
+        end
+
+        -- compute dx and dtheta
+        lw_rot = lwmotor_joint_ang_change*(WheelDiameter/2.0)
+        rw_rot = rwmotor_joint_ang_change*(WheelDiameter/2.0)
+        dx = (lw_rot+rw_rot)/2.0
+        dtheta = ((rw_rot-lw_rot)/2.0)/(WheelDist/2.0)
+        
+        -- compute X,Y,Theta of wheel encoder based odometry
+        odomTh = odomTh+dtheta
+        if (odomTh>math.pi) then
+            odomTh=odomTh-(math.pi*2)
+        elseif (odomTh<((-1)*math.pi)) then
+            odomTh=odomTh+(math.pi*2)
+        end
+        odomX = odomX+math.cos(odomTh)*dx
+        odomY = odomY+math.sin(odomTh)*dx
+
+        -- compute velocity vx,w based on wheel encoder
+        lv_meas = (lwmotor_joint_ang_change*(WheelDiameter/2.0))/odom_dt
+        rv_meas = (rwmotor_joint_ang_change*(WheelDiameter/2.0))/odom_dt
+
+        vx_meas = (lv_meas+rv_meas)/2.0
+        w_meas = ((rv_meas-lv_meas)/2.0)/(WheelDist/2.0)
+
+        -- axis angle to quatenion: rotate around (_x,_y,_z) axis with p angle:
+        -- q = (sin(p/2) * _x, sin(p/2) * _y, sin(p/2) * _z, cos(p/2))
+        odomTh_quat = {0, 0, math.sin(odomTh/2.0), math.cos(odomTh/2.0)}
+
+        -- pub OdomTFMsg
+        OdomTFMsg['header']['stamp']=current_sim_time
+        OdomTFMsg['header']['seq'] = odom_seq
+        OdomTFMsg['transform']['translation']['x'] = odomX
+        OdomTFMsg['transform']['translation']['y'] = odomY
+        OdomTFMsg['transform']['rotation']['z'] = odomTh_quat[3]
+        OdomTFMsg['transform']['rotation']['w'] = odomTh_quat[4]
+        simROS.sendTransform(OdomTFMsg)
+
+        -- pub OdomMsg
+        OdomMsg['header']['stamp']=current_sim_time
+        OdomMsg['header']['seq'] = odom_seq
+        OdomMsg['pose']['pose']['position']['x'] = odomX
+        OdomMsg['pose']['pose']['position']['y'] = odomY
+        OdomMsg['pose']['pose']['orientation']['z'] = odomTh_quat[3]
+        OdomMsg['pose']['pose']['orientation']['w'] = odomTh_quat[4]
+
+        OdomMsg['twist']['twist']['linear']['x'] = vx_meas
+        OdomMsg['twist']['twist']['linear']['y'] = 0
+        OdomMsg['twist']['twist']['angular']['z'] = w_meas
+        simROS.publish(pub_odom, OdomMsg)
+
+        odom_pub_pre_sim_time = current_sim_time
+        odom_seq = odom_seq+1
+
+        lwmotor_joint_ang_pre = lwmotor_joint_ang_cur
+        rwmotor_joint_ang_pre = rwmotor_joint_ang_cur
+    end
+end
+
+function sysCall_cleanup()
+    -- do some clean-up here
+end
+
+-- set velocity when it receives "cmd_vel" ros msgs
+function velocity_callback(msg)
+    -- This is the rostopic "cmd_vel"'s callback function
+    
+    -- the following codes are for debugging only
+    -- sim.addStatusbarMessage('sub_velocity receiver: ' .. msg.linear.x)
+    --print('-------------------')
+    --print('cmd_vel:')
+    --print('V_X: ' .. msg.linear.x .. ', V_Y: ' .. msg.linear.y .. ', Omega: ' .. msg.angular.z)
+
+    -- extract vx and w
+    vx = msg.linear.x
+    w = msg.angular.z
+
+    lv = vx-w*(WheelDist/2.0) -- left wheel's velocity
+    rv = vx+w*(WheelDist/2.0) -- right wheel's velocity
+
+    -- set motor
+    print('lv: ' .. lv .. ', rv: ' .. rv) -- for debugging purpose
+    lv_rot = (lv/(WheelDiameter/2.0)) -- rotation velocity of left wheel in radian/s, no need to *(180/math.pi)
+    rv_rot = (rv/(WheelDiameter/2.0)) -- rotation velocity of right wheel in radian/s, no need to *(180/math.pi)
+
+    sim.setJointTargetVelocity(lwmotor,lv_rot)
+    sim.setJointTargetVelocity(rwmotor,rv_rot)
+
+end
+
+-- See the user manual or the available code snippets for additional callback functions and details
+=======================================================================
+%%SceneScripts
+
+function __getObjectPosition__(a,b)
+    -- compatibility routine, wrong results could be returned in some situations, in CoppeliaSim <4.0.1
+    if b==sim.handle_parent then
+        b=sim.getObjectParent(a)
+    end
+    if (b~=-1) and (sim.getObjectType(b)==sim.object_joint_type) and (sim.getInt32Param(sim.intparam_program_version)>=40001) then
+        a=a+sim.handleflag_reljointbaseframe
+    end
+    return sim.getObjectPosition(a,b)
+end
+function __getObjectQuaternion__(a,b)
+    -- compatibility routine, wrong results could be returned in some situations, in CoppeliaSim <4.0.1
+    if b==sim.handle_parent then
+        b=sim.getObjectParent(a)
+    end
+    if (b~=-1) and (sim.getObjectType(b)==sim.object_joint_type) and (sim.getInt32Param(sim.intparam_program_version)>=40001) then
+        a=a+sim.handleflag_reljointbaseframe
+    end
+    return sim.getObjectQuaternion(a,b)
+end
+
+function sysCall_init()
+    -- do some initialization here
+    -- param
+    tf_pub_rate = 50
+    tf_pub_ts = 1.0/tf_pub_rate
+    
+    pub_pre_sim_time = 0
+
+    -- Check the required RosInterface first
+    if simROS then   
+        pub_timer   = simROS.advertise('/clock','rosgraph_msgs/Clock')   
+    else
+        -- Display an error message if the plugin was not found:
+        sim.displayDialog('SceneScripts error','ROS plugin was not found.&&nSimulation will not run properly',sim.dlgstyle_ok,false,nil,{0.8,0,0,0,0,0},{0.5,0,0,1,1,1})
+    end
+    
+    -- get transform
+    tf_seq = 0
+    robotbaselink_init = sim.getObjectHandle("smallrobot_init_link")
+    robotbaselink_cur = sim.getObjectHandle("smallrobot_base_link")
+    lasermodelRef=sim.getObjectHandle("Hokuyo_URG_04LX_UG01_ROS_ref")
+    
+    --BaseLinkGtInOdomGT
+    local t = __getObjectPosition__(robotbaselink_cur, robotbaselink_init)
+    local q = __getObjectQuaternion__(robotbaselink_cur, robotbaselink_init)
+    BaseLinkGtInOdomGT= {
+        header={
+            seq=0,
+            stamp=0.0,
+            frame_id="odom_gt"
+        },
+        child_frame_id="base_link_gt",
+        transform={
+            translation = {x=t[1],y=t[2],z=t[3]},
+            rotation= {x=q[1],y=q[2], z=q[3],w=q[4]}
+        }
+    }
+
+    --BaseLinkGtInMap
+    t = sim.getObjectPosition(robotbaselink_cur,-1)
+    q = sim.getObjectQuaternion(robotbaselink_cur,-1)
+    BaseLinkGtInMap= {
+        header={
+            seq=0,
+            stamp=0.0,
+            frame_id="map"
+        },
+        child_frame_id="base_link_gt",
+        transform={
+            translation = {x=t[1],y=t[2],z=t[3]},
+            rotation= {x=q[1],y=q[2], z=q[3],w=q[4]}
+        }
+    }
+    
+    --OdomGtInMap
+    t = sim.getObjectPosition(robotbaselink_init,-1)
+    q = sim.getObjectQuaternion(robotbaselink_init,-1)
+    OdomGtInMap= {
+        header={
+            seq=0,
+            stamp=0.0,
+            frame_id="map"
+        },
+        child_frame_id="odom_gt",
+        transform={
+            translation = {x=t[1],y=t[2],z=t[3]},
+            rotation= {x=q[1],y=q[2], z=q[3],w=q[4]}
+        }
+    }
+    
+    --LaserGtInBaseLinkGT
+    t = __getObjectPosition__(lasermodelRef, robotbaselink_cur)
+    q = __getObjectQuaternion__(lasermodelRef, robotbaselink_cur)
+    LaserGtInBaseLinkGT= {
+        header={
+            seq=0,
+            stamp=0.0,
+            frame_id="base_link_gt"
+        },
+        child_frame_id="laser_link",
+        transform={
+            translation = {x=t[1],y=t[2],z=t[3]},
+            rotation= {x=q[1],y=q[2], z=q[3],w=q[4]}
+        }
+    }
+    --print("laser_link in base_link: x:" .. t[1] .. ", y:" .. t[2] .. ", z:" .. t[3] .. ", qx:" .. q[1] .. ", qy:" .. q[2] .. ", qz:" .. q[3] .. ", qw:" .. q[4])
+
+    --LaserInBaseLink
+    t = __getObjectPosition__(lasermodelRef, robotbaselink_cur)
+    q = __getObjectQuaternion__(lasermodelRef, robotbaselink_cur)
+    LaserInBaseLink= {
+        header={
+            seq=0,
+            stamp=0.0,
+            frame_id="base_link"
+        },
+        child_frame_id="laser_link",
+        transform={
+            translation = {x=t[1],y=t[2],z=t[3]},
+            rotation= {x=q[1],y=q[2], z=q[3],w=q[4]}
+        }
+    }
+    
+end
+
+function sysCall_actuation()
+    -- put your actuation code here
+    local current_sim_time = sim.getSimulationTime()
+    
+    -- pub clock
+    simROS.publish(pub_timer, {clock=current_sim_time})
+
+    -- pub laser in robot static tf
+    -- publishing static tf too fast will leads to
+    -- tf.ExtrapolationException: Lookup would require extrapolation into the future
+    -- error, since ros has buffer in reading tf and too fast tf publication leads to
+    -- tf block and ros cannot find the nearest time tf to current /clock
+    if ((current_sim_time-pub_pre_sim_time)>tf_pub_ts) then
+
+        BaseLinkGtInOdomGT['header']['stamp']=current_sim_time
+        BaseLinkGtInOdomGT['header']['seq'] = tf_seq
+
+        -- BaseLinkGtInOdomGT
+        local t = __getObjectPosition__(robotbaselink_cur, robotbaselink_init)
+        local q = __getObjectQuaternion__(robotbaselink_cur, robotbaselink_init)
+        
+        BaseLinkGtInOdomGT['transform']['translation']['x'] = t[1]
+        BaseLinkGtInOdomGT['transform']['translation']['y'] = t[2]
+        BaseLinkGtInOdomGT['transform']['translation']['z'] = t[3]
+        BaseLinkGtInOdomGT['transform']['rotation']['x'] = q[1]
+        BaseLinkGtInOdomGT['transform']['rotation']['y'] = q[2]
+        BaseLinkGtInOdomGT['transform']['rotation']['z'] = q[3]
+        BaseLinkGtInOdomGT['transform']['rotation']['w'] = q[4]
+
+        --simROS.sendTransform(BaseLinkGtInOdomGT)
+
+        -- BaseLinkGtInMap
+        BaseLinkGtInMap['header']['stamp']=current_sim_time
+        BaseLinkGtInMap['header']['seq'] = tf_seq
+
+        t = sim.getObjectPosition(robotbaselink_cur,-1)
+        q = sim.getObjectQuaternion(robotbaselink_cur,-1)
+
+        BaseLinkGtInMap['transform']['translation']['x'] = t[1]
+        BaseLinkGtInMap['transform']['translation']['y'] = t[2]
+        BaseLinkGtInMap['transform']['translation']['z'] = t[3]
+        BaseLinkGtInMap['transform']['rotation']['x'] = q[1]
+        BaseLinkGtInMap['transform']['rotation']['y'] = q[2]
+        BaseLinkGtInMap['transform']['rotation']['z'] = q[3]
+        BaseLinkGtInMap['transform']['rotation']['w'] = q[4]
+
+        --simROS.sendTransform(BaseLinkGtInMap)
+
+        -- OdomGtInMap
+        OdomGtInMap['header']['stamp']=current_sim_time
+        OdomGtInMap['header']['seq'] = tf_seq
+        
+        --simROS.sendTransform(OdomGtInMap)
+        
+        -- LaserGtInBaseLinkGT
+        LaserGtInBaseLinkGT['header']['stamp']=current_sim_time
+        LaserGtInBaseLinkGT['header']['seq'] = tf_seq
+        
+        --simROS.sendTransform(LaserGtInBaseLinkGT)
+        
+        -- LaserInBaseLink
+        LaserInBaseLink['header']['stamp']=current_sim_time
+        LaserInBaseLink['header']['seq'] = tf_seq
+        
+        simROS.sendTransform(LaserInBaseLink)
+
+        -- update pub_pre_sim_time and tf_seq
+        pub_pre_sim_time = current_sim_time
+        tf_seq = tf_seq + 1
+    end
+end
+
+function sysCall_sensing()
+    -- put your sensing code here
+end
+
+function sysCall_cleanup()
+    -- do some clean-up here
+end
+
+-- See the user manual or the available code snippets for additional callback functions and details
+=======================================
+%%ros_amcl
+
+<?xml version="1.0"?>
+<launch>
+  <!-- <master auto="start"/>  -->
+  <param name="use_sim_time" value="true" />
+
+  <!--   map_server -->
+  <node pkg="map_server" type="map_server" name="map_server" args="$(find smallrobot)/map/exp2_map.yaml"/>
+
+  <!--   amcl -->
+  <node pkg="amcl" type="amcl" name="amcl" output="screen">
+    <param name="initial_pose_x" value="0" />
+    <param name="initial_pose_y" value="0" />
+    <param name="initial_pose_a" value="0" />
+    <param name="initial_pose_xx" value="0.01" />
+    <param name="initial_pose_yy" value="0.01" />
+    <param name="initial_pose_aa" value="0.01" />
+  </node>
+
+  <!--   move_base -->
+  <node pkg="move_base" type="move_base" respawn="false" name="move_base" output="screen">
+    <rosparam file="$(find smallrobot)/param/costmap_common_params.yaml" command="load" ns="global_costmap" />
+    <rosparam file="$(find smallrobot)/param/costmap_common_params.yaml" command="load" ns="local_costmap" />
+    <rosparam file="$(find smallrobot)/param/local_costmap_params.yaml" command="load" />
+    <rosparam file="$(find smallrobot)/param/global_costmap_params.yaml" command="load" />
+    <rosparam file="$(find smallrobot)/param/base_local_planner_params.yaml" command="load" />
+    <param name="controller_frequency" value="5" />
+    <param name="controller_patience" value="15" />
+    <param name="base_local_planner" value="base_local_planner/TrajectoryPlannerROS" />
+
+  </node>
+
+  <node pkg="rviz" type="rviz" name="rviz" args="-d $(find smallrobot)/rviz_cfg/exp2_amcl_movebase.rviz"/>
+</launch> 
+=============================
+%%costmap_common_params
+
+obstacle_range: 2
+raytrace_range: 5
+#footprint: [[0.7, 1.0], [0.7, -1.0], [-0.7, -1.0], [-0.7, 1.0]]
+footprint: [[0.015, 0.015], [0.015, -0.015], [-0.015, -0.015], [-0.015, 0.015]]
+#robot_radius: ir_of_robot
+inflation_radius: 0.2
+
+resolution: 0.01
+
+observation_sources: laser_scan_sensor #point_cloud_sensor
+
+laser_scan_sensor: {sensor_frame: laser_link, data_type: LaserScan, topic: /scan, marking: true, clearing: true}
+
+#point_cloud_sensor: {sensor_frame: frame_name, data_type: PointCloud, topic: topic_name, marking: true, clearing: true}
+=============================
+global_cost_params
+
+global_costmap:
+  global_frame: map
+  robot_base_frame: base_link
+  update_frequency: 5.0
+  static_map: true
+
+  resolution: 0.01
+
+=====================
+base_local_params
+
+#DWAPlannerROS:
+TrajectoryPlannerROS:
+  max_vel_x: 0.3
+  min_vel_x: 0
+  max_vel_theta: 1.5
+  min_vel_theta: -1.5
+  min_in_place_vel_theta: 0
+
+#  meter_scoring: true
+
+  holonomic_robot: false
+
+  yaw_goal_tolerance: 0.17
+  xy_goal_tolerance: 0.2
+  latch_xy_goal_tolerance: true
+
+
